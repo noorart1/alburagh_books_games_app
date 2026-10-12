@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,7 +9,9 @@ import '../../../core/theme/app_theme.dart';
 import '../data/content_download_manager.dart';
 import '../domain/content_item.dart';
 import '../domain/content_type.dart';
+import 'book_detail_screen.dart';
 import 'content_providers.dart';
+import 'storage_browser_dialog.dart';
 
 const _categoryTitles = {
   ContentType.book: 'القصص التفاعلية',
@@ -16,10 +20,8 @@ const _categoryTitles = {
   ContentType.soundBook: 'الكتب الصوتية',
 };
 
-/// The grid of content cards for one category — mirrors `ContentsFragment`.
-/// Books navigate to a detail screen first (`ContentDetailsFragment`);
-/// games/quran/sound-books have no details screen and download directly,
-/// matching the original app's navigation split.
+/// The grid of content cards for one category.
+/// Supports offline filtering, bundled pre-installed content, and importing local files.
 class ContentGridScreen extends ConsumerWidget {
   const ContentGridScreen({required this.type, super.key});
 
@@ -28,9 +30,41 @@ class ContentGridScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final itemsAsync = ref.watch(contentItemsProvider(type));
+    final online = ref.watch(isOnlineProvider);
+    final downloadedOnly = ref.watch(downloadedOnlyFilterProvider);
 
     return Scaffold(
-      appBar: AppBar(title: Text(_categoryTitles[type]!)),
+      appBar: AppBar(
+        title: Text(_categoryTitles[type]!),
+        actions: [
+          if (!online)
+            IconButton(
+              icon: const Icon(Icons.wifi_off_rounded),
+              tooltip: 'لا يوجد اتصال بالإنترنت - انقر لإعادة المحاولة',
+              onPressed: () => ref.read(contentListProvider.notifier).refresh(),
+            ),
+          // Filter toggle: Downloaded only / All
+          FilterChip(
+            selected: downloadedOnly,
+            avatar: Icon(
+              downloadedOnly ? Icons.cloud_done_rounded : Icons.cloud_outlined,
+              size: 16,
+              color: downloadedOnly ? Colors.green[800] : null,
+            ),
+            label: const Text('المُنزَّلة فقط (أوفلاين)'),
+            onSelected: (selected) =>
+                ref.read(downloadedOnlyFilterProvider.notifier).state = selected,
+          ),
+          const SizedBox(width: AppSpacing.xs),
+          // Import local content button
+          IconButton.filledTonal(
+            icon: const Icon(Icons.file_upload_outlined),
+            tooltip: 'استيراد ملف Zip أو مجلد محلي',
+            onPressed: () => StorageBrowserDialog.show(context, initialType: type),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+        ],
+      ),
       body: itemsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, stack) => _ErrorState(
@@ -41,51 +75,104 @@ class ContentGridScreen extends ConsumerWidget {
           if (items.isEmpty) {
             return const Center(child: Text('لا يوجد محتوى بعد'));
           }
-          return _ContentGrid(items: items);
+          return _FilteredContentGrid(items: items, downloadedOnly: downloadedOnly);
         },
       ),
     );
   }
 }
 
-/// Lays the cards out in a fixed 3-column grid that is scaled to fill the
-/// available height with no scrolling when the category has few items
-/// (kids shouldn't need to discover a hidden scroll to see everything).
-/// Falls back to a normal scrollable grid once there are too many items to
-/// keep cards at a legible size.
+class _FilteredContentGrid extends ConsumerWidget {
+  const _FilteredContentGrid({required this.items, required this.downloadedOnly});
+
+  final List<ContentItem> items;
+  final bool downloadedOnly;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!downloadedOnly) {
+      return _ContentGrid(items: items);
+    }
+
+    final manager = ref.watch(contentDownloadManagerProvider);
+
+    return FutureBuilder<List<ContentItem>>(
+      future: () async {
+        final downloadedList = <ContentItem>[];
+        for (final item in items) {
+          if (await manager.isDownloaded(item)) {
+            downloadedList.add(item);
+          }
+        }
+        return downloadedList;
+      }(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final downloadedItems = snapshot.data!;
+        if (downloadedItems.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.download_for_offline_outlined, size: 64, color: Colors.grey),
+                const SizedBox(height: AppSpacing.md),
+                const Text(
+                  'لم يتم تنزيل أو استيراد أي محتوى بدون إنترنت بعد',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                const Text(
+                  'يمكنك استيراد ملفات Zip أو مجلدات من زر الاستيراد في الأعلى',
+                  style: TextStyle(color: Colors.grey),
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                FilledButton.icon(
+                  icon: const Icon(Icons.file_upload_outlined),
+                  label: const Text('استيراد محتوى محلي الآن'),
+                  onPressed: () => StorageBrowserDialog.show(context),
+                ),
+              ],
+            ),
+          );
+        }
+        return _ContentGrid(items: downloadedItems);
+      },
+    );
+  }
+}
+
+/// Lays the cards out in a 6-column responsive grid.
 class _ContentGrid extends StatelessWidget {
   const _ContentGrid({required this.items});
 
   final List<ContentItem> items;
 
-  static const _crossAxisCount = 3;
-  static const _minCellHeight = 150.0;
+  static const _crossAxisCount = 6;
+  static const _minCellHeight = 75.0;
+  static const _gap = AppSpacing.lg / 2;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final rows = (items.length / _crossAxisCount).ceil();
-        final cellWidth = (constraints.maxWidth -
-                AppSpacing.lg * 2 -
-                AppSpacing.lg * (_crossAxisCount - 1)) /
-            _crossAxisCount;
-        final fittedCellHeight = (constraints.maxHeight -
-                AppSpacing.lg * 2 -
-                AppSpacing.lg * (rows - 1)) /
-            rows;
+        final cellWidth =
+            (constraints.maxWidth - _gap * 2 - _gap * (_crossAxisCount - 1)) / _crossAxisCount;
+        final fittedCellHeight = (constraints.maxHeight - _gap * 2 - _gap * (rows - 1)) / rows;
         final fitsWithoutScrolling = fittedCellHeight >= _minCellHeight;
         final cellHeight = fitsWithoutScrolling ? fittedCellHeight : cellWidth / 0.72;
 
         return GridView.builder(
-          padding: const EdgeInsets.all(AppSpacing.lg),
+          padding: const EdgeInsets.all(_gap),
           physics: fitsWithoutScrolling
               ? const NeverScrollableScrollPhysics()
               : const AlwaysScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: _crossAxisCount,
-            mainAxisSpacing: AppSpacing.lg,
-            crossAxisSpacing: AppSpacing.lg,
+            mainAxisSpacing: _gap,
+            crossAxisSpacing: _gap,
             childAspectRatio: cellWidth / cellHeight,
           ),
           itemCount: items.length,
@@ -137,8 +224,7 @@ class _ContentCardState extends ConsumerState<_ContentCard> {
   }
 
   Future<void> _checkDownloaded() async {
-    final downloaded =
-        await ref.read(contentDownloadManagerProvider).isDownloaded(widget.item);
+    final downloaded = await ref.read(contentDownloadManagerProvider).isDownloaded(widget.item);
     if (mounted) {
       setState(() {
         _downloaded = downloaded;
@@ -153,21 +239,23 @@ class _ContentCardState extends ConsumerState<_ContentCard> {
       await _checkDownloaded();
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('فشل التحميل، حاول مرة أخرى')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('فشل التحميل، تأكد من الاتصال بالإنترنت')));
       }
     }
   }
 
   Future<void> _delete() async {
+    if (!await confirmDeleteDownload(context, widget.item.title)) return;
     await ref.read(contentDownloadManagerProvider).delete(widget.item);
     await _checkDownloaded();
   }
 
   void _open() {
     if (widget.item.contentType == ContentType.book) {
-      context.push('/content/book/${widget.item.folder}');
+      // The book may have been downloaded from inside the popup.
+      BookDetailScreen.show(context, widget.item.folder).then((_) => _checkDownloaded());
       return;
     }
     if (!_downloaded) {
@@ -175,6 +263,45 @@ class _ContentCardState extends ConsumerState<_ContentCard> {
       return;
     }
     context.push('/content/player', extra: widget.item);
+  }
+
+  Widget _buildCover(ThemeData theme) {
+    final cover = widget.item.coverImageUrl;
+
+    if (cover.isNotEmpty && File(cover).existsSync()) {
+      return Image.file(File(cover), fit: BoxFit.cover);
+    }
+
+    if (cover.startsWith('http://') || cover.startsWith('https://')) {
+      return CachedNetworkImage(
+        imageUrl: cover,
+        fit: BoxFit.cover,
+        placeholder: (context, url) => Container(color: theme.colorScheme.surfaceContainerHighest),
+        errorWidget: (context, url, error) => Container(
+          color: theme.colorScheme.surfaceContainerHighest,
+          child: Icon(
+            widget.item.contentType == ContentType.book
+                ? Icons.auto_stories_rounded
+                : Icons.extension_rounded,
+            size: 20,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Center(
+        child: Icon(
+          widget.item.contentType == ContentType.book
+              ? Icons.auto_stories_rounded
+              : Icons.extension_rounded,
+          size: 22,
+          color: theme.colorScheme.primary,
+        ),
+      ),
+    );
   }
 
   @override
@@ -187,68 +314,64 @@ class _ContentCardState extends ConsumerState<_ContentCard> {
       child: Column(
         children: [
           Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: Card(
-                    child: CachedNetworkImage(
-                      imageUrl: widget.item.coverImageUrl,
-                      fit: BoxFit.cover,
-                      placeholder: (context, url) => Container(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                      ),
-                      errorWidget: (context, url, error) => Container(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        child: const Icon(Icons.image_not_supported_outlined),
+            child: StreamBuilder<ContentDownloadProgress>(
+              stream: ref.read(contentDownloadManagerProvider).progressStream(widget.item.folder),
+              builder: (context, snapshot) {
+                final downloading =
+                    !_downloaded && snapshot.connectionState == ConnectionState.active;
+                return Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Card(
+                        clipBehavior: Clip.antiAlias,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _buildCover(theme),
+                            if (downloading) DownloadProgressOverlay(progress: snapshot.data),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                Positioned(
-                  top: 8,
-                  right: 8,
-                  child: _IconBadge(
-                    icon: isFavorite ? Icons.favorite : Icons.favorite_border,
-                    color: isFavorite ? theme.colorScheme.error : null,
-                    onTap: () => ref.read(favoritesProvider.notifier).toggle(widget.item.folder),
-                  ),
-                ),
-                if (_checkedOnce)
-                  Positioned(
-                    top: 8,
-                    left: 8,
-                    child: _downloaded
-                        ? _IconBadge(icon: Icons.check_circle, onTap: _delete)
-                        : StreamBuilder<ContentDownloadProgress>(
-                            stream: ref
-                                .read(contentDownloadManagerProvider)
-                                .progressStream(widget.item.folder),
-                            builder: (context, snapshot) {
-                              if (!snapshot.hasData) {
-                                return _IconBadge(
-                                  icon: Icons.download_rounded,
-                                  onTap: _startDownload,
-                                );
-                              }
-                              final progress = snapshot.data;
-                              return SizedBox(
-                                width: 32,
-                                height: 32,
-                                child: CircularProgressIndicator(value: progress),
-                              );
-                            },
-                          ),
-                  ),
-              ],
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: _IconBadge(
+                        icon: isFavorite ? Icons.favorite : Icons.favorite_border,
+                        color: isFavorite ? theme.colorScheme.error : null,
+                        onTap: () =>
+                            ref.read(favoritesProvider.notifier).toggle(widget.item.folder),
+                      ),
+                    ),
+                    if (_checkedOnce && !downloading)
+                      Positioned(
+                        top: 4,
+                        left: 4,
+                        child: _downloaded
+                            ? _IconBadge(
+                                icon: Icons.check_circle,
+                                color: Colors.green,
+                                tooltip: 'جاهز بدون إنترنت (أوفلاين) - انقر للحذف',
+                                onTap: _delete,
+                              )
+                            : _IconBadge(
+                                icon: Icons.download_rounded,
+                                tooltip: 'تنزيل للاستخدام بدون إنترنت',
+                                onTap: _startDownload,
+                              ),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
-          const SizedBox(height: AppSpacing.xs),
+          const SizedBox(height: AppSpacing.xs / 2),
           Text(
             widget.item.title,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -257,26 +380,32 @@ class _ContentCardState extends ConsumerState<_ContentCard> {
 }
 
 class _IconBadge extends StatelessWidget {
-  const _IconBadge({required this.icon, required this.onTap, this.color});
+  const _IconBadge({required this.icon, required this.onTap, this.color, this.tooltip});
 
   final IconData icon;
   final VoidCallback onTap;
   final Color? color;
+  final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Material(
+    final button = Material(
       color: theme.colorScheme.surface.withValues(alpha: 0.9),
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 20, color: color ?? theme.colorScheme.onSurface),
+          padding: const EdgeInsets.all(3),
+          child: Icon(icon, size: 10, color: color ?? theme.colorScheme.onSurface),
         ),
       ),
     );
+
+    if (tooltip != null) {
+      return Tooltip(message: tooltip!, child: button);
+    }
+    return button;
   }
 }

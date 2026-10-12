@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../content/domain/content_type.dart';
+import '../../content/presentation/storage_browser_dialog.dart';
 
 /// Categories screen ("المحتويات"): 2x2 grid — Educational Games,
 /// Interactive Books, The Holy Quran, Audio Books. Mirrors `MenuFragment`.

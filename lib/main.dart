@@ -1,3 +1,4 @@
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -15,6 +16,11 @@ void main() async {
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
+  // Content plays narration, music and effects on separate players at once;
+  // with the default `gain` focus each new effect stops the narration.
+  await AudioPlayer.global.setAudioContext(
+    AudioContextConfig(focus: AudioContextConfigFocus.mixWithOthers).build(),
+  );
   final prefs = await SharedPreferences.getInstance();
 
   runApp(

@@ -16,7 +16,9 @@ class ContentApi {
 
   final Dio _dio;
 
-  Future<ContentListResponse> getContentList() async {
+  /// Raw `content_list` body, so it can be cached byte-for-byte (the models'
+  /// `fromJson` expects the server's string-typed numbers, which `toJson` loses).
+  Future<String> getContentListRaw() async {
     // The server mislabels this endpoint as `text/html`, so Dio's
     // auto-JSON-decoding (which keys off the content-type header) skips it
     // and hands back a raw string — decode it ourselves instead.
@@ -24,8 +26,11 @@ class ContentApi {
       '/content_list',
       options: Options(responseType: ResponseType.plain),
     );
-    return ContentListResponse.fromJson(jsonDecode(response.data!) as Map<String, dynamic>);
+    return response.data!;
   }
+
+  static ContentListResponse parseContentList(String raw) =>
+      ContentListResponse.fromJson(jsonDecode(raw) as Map<String, dynamic>);
 
   /// `GET /rate/{contentID}/{rate}` — rate is sent as a `%.1f`-formatted string.
   Future<void> rateContent(String contentId, double rate) async {

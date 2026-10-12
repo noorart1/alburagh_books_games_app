@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 /// Serves a downloaded content folder over `http://127.0.0.1:<port>` so the
@@ -39,10 +40,43 @@ class LocalContentServer {
       await request.response.close();
       return;
     }
-    request.response.headers.contentType = _contentTypeFor(file.path);
-    await request.response.addStream(file.openRead());
+    final contentType = _contentTypeFor(file.path);
+    request.response.headers.contentType = contentType;
+    if (contentType == ContentType.html) {
+      // Define the bridge before any page script runs: content calls
+      // `alburagh.playNarration(...)` from `init_page()` during load, which
+      // an onPageFinished injection is too late for.
+      final html = utf8.decode(await file.readAsBytes(), allowMalformed: true);
+      request.response.write(_injectBridge(html));
+    } else {
+      await request.response.addStream(file.openRead());
+    }
     await request.response.close();
   }
+
+  static String _injectBridge(String html) {
+    final head = RegExp('<head[^>]*>', caseSensitive: false).firstMatch(html);
+    return head == null
+        ? '$bridgeScript$html'
+        : html.replaceRange(head.end, head.end, bridgeScript);
+  }
+
+  /// `window.alburagh` — the Android JS interface the content's `alburagh.js`
+  /// calls, forwarded to the `alburaghBridge` JavaScript channel as JSON.
+  static const bridgeScript = '''
+<script>
+(function () {
+  function call(method) {
+    return function () {
+      alburaghBridge.postMessage(JSON.stringify({method: method, args: Array.prototype.slice.call(arguments)}));
+    };
+  }
+  window.alburagh = {};
+  ['openPage', 'bookFinished', 'bookExit', 'playMusic', 'stopMusic',
+   'playNarration', 'stopNarration', 'playSound'].forEach(function (m) { window.alburagh[m] = call(m); });
+})();
+</script>
+''';
 
   ContentType _contentTypeFor(String path) {
     final ext = path.split('.').last.toLowerCase();

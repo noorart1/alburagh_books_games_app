@@ -43,12 +43,11 @@ class _ContentPlayerScreenState extends ConsumerState<ContentPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    // `window.alburagh` is injected into every page by [LocalContentServer].
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel('alburaghBridge', onMessageReceived: _onBridgeMessage)
-      ..setNavigationDelegate(
-        NavigationDelegate(onPageFinished: (_) => _injectBridgeShim()),
-      );
+      ..setOnConsoleMessage((m) => debugPrint('[content ${m.level.name}] ${m.message}'));
     _init();
   }
 
@@ -77,43 +76,44 @@ class _ContentPlayerScreenState extends ConsumerState<ContentPlayerScreen> {
     if (manifest.isPaged && (index < 0 || index >= manifest.pages!.length)) return;
     final relativeHtml = manifest.isPaged ? manifest.pages![index].html : manifest.html!;
     final pageUri = baseUri.replace(pathSegments: relativeHtml.split('/'));
+    _stopPageAudio(); // the previous page's narration/effects mustn't play over the new page
     await _controller.loadRequest(pageUri);
   }
 
-  Future<void> _injectBridgeShim() async {
-    await _controller.runJavaScript('''
-      window.alburagh = {
-        openPage: function(i) { alburaghBridge.postMessage(JSON.stringify({method:"openPage", args:[i]})); },
-        bookFinished: function() { alburaghBridge.postMessage(JSON.stringify({method:"bookFinished", args:[]})); },
-        bookExit: function() { alburaghBridge.postMessage(JSON.stringify({method:"bookExit", args:[]})); },
-        playMusic: function(p, v) { alburaghBridge.postMessage(JSON.stringify({method:"playMusic", args:[p, v]})); },
-        stopMusic: function() { alburaghBridge.postMessage(JSON.stringify({method:"stopMusic", args:[]})); },
-        playNarration: function(p, v) { alburaghBridge.postMessage(JSON.stringify({method:"playNarration", args:[p, v]})); },
-        stopNarration: function() { alburaghBridge.postMessage(JSON.stringify({method:"stopNarration", args:[]})); },
-        playSound: function(p, v) { alburaghBridge.postMessage(JSON.stringify({method:"playSound", args:[p, v]})); }
-      };
-    ''');
+  /// Background music is left running: books start it once on page 0
+  /// (`play_music('fx/music.mp3', .3)`) and expect it across pages, until
+  /// `stop_music()` or the player closes.
+  void _stopPageAudio() {
+    _narration.stop();
+    for (final player in _soundPlayers.values) {
+      player.dispose();
+    }
+    _soundPlayers.clear();
   }
 
   void _onBridgeMessage(JavaScriptMessage message) {
     final Map<String, dynamic> call = jsonDecode(message.message) as Map<String, dynamic>;
     final method = call['method'] as String;
     final args = call['args'] as List<dynamic>;
+    // Content often omits the volume (`play_narration('1/media/01.mp3')`),
+    // which arrives as null/missing — default to full volume.
+    final volume = args.length > 1 && args[1] is num ? (args[1] as num).toDouble() : 1.0;
     switch (method) {
       case 'openPage':
-        _loadPage(args[0] as int);
+        _loadPage(int.parse('${args[0]}'));
       case 'bookExit':
         if (mounted) context.pop();
       case 'playMusic':
-        _music.play(DeviceFileSource(_resolveAssetPath(args[0] as String)), volume: (args[1] as num).toDouble());
+        _playMusic(args[0] as String, volume);
       case 'stopMusic':
+        _musicPath = null;
         _music.stop();
       case 'playNarration':
-        _narration.play(DeviceFileSource(_resolveAssetPath(args[0] as String)), volume: (args[1] as num).toDouble());
+        _play(_narration, args[0] as String, volume);
       case 'stopNarration':
         _narration.stop();
       case 'playSound':
-        _playSound(args[0] as String, (args[1] as num).toDouble());
+        _playSound(args[0] as String, volume);
       case 'bookFinished':
         break;
     }
@@ -121,13 +121,43 @@ class _ContentPlayerScreenState extends ConsumerState<ContentPlayerScreen> {
 
   String _resolveAssetPath(String relativePath) => '${_contentDir!.path}/$relativePath';
 
+  /// Content sometimes references audio missing from its zip (e.g. a page asks
+  /// for `1/media/001.mp3` but ships only `01.mp3`) — skip those quietly, like
+  /// the original app, instead of throwing and breaking the page's other audio.
+  bool _exists(String relativePath) {
+    if (File(_resolveAssetPath(relativePath)).existsSync()) return true;
+    debugPrint('[content audio] missing: $relativePath');
+    return false;
+  }
+
+  void _play(AudioPlayer player, String relativePath, double volume) {
+    if (!_exists(relativePath)) return;
+    player
+        .play(DeviceFileSource(_resolveAssetPath(relativePath)), volume: volume)
+        .catchError((Object e) => debugPrint('[content audio] $relativePath: $e'));
+  }
+
+  String? _musicPath;
+
+  /// A page re-requesting the music that's already playing keeps it going
+  /// rather than restarting it from the top.
+  void _playMusic(String relativePath, double volume) {
+    if (relativePath == _musicPath && _music.state == PlayerState.playing) {
+      _music.setVolume(volume);
+      return;
+    }
+    _musicPath = relativePath;
+    _play(_music, relativePath, volume);
+  }
+
   void _playSound(String relativePath, double volume) {
+    if (!_exists(relativePath)) return;
     final player = _soundPlayers.putIfAbsent(relativePath, () {
       final p = AudioPlayer();
       p.onPlayerComplete.listen((_) => _soundPlayers.remove(relativePath)?.dispose());
       return p;
     });
-    player.play(DeviceFileSource(_resolveAssetPath(relativePath)), volume: volume);
+    _play(player, relativePath, volume);
   }
 
   @override
