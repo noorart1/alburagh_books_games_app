@@ -36,6 +36,9 @@ class LocalContentServer {
     final relativePath = request.uri.pathSegments.join('/');
     final file = File('${root.path}/$relativePath');
     if (!await file.exists()) {
+      // Content often references files its zip doesn't ship (pathfind.js,
+      // audio); a 404 body then fails e.g. Web Audio decoding — log which.
+      print('[content 404] $relativePath'); // ignore: avoid_print
       request.response.statusCode = HttpStatus.notFound;
       await request.response.close();
       return;

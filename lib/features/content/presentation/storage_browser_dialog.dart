@@ -197,9 +197,9 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('المسار المحدد غير موجود أو غير صالح')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('المسار المحدد غير موجود أو غير صالح')));
     }
   }
 
@@ -285,7 +285,9 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
                 const SizedBox(height: AppSpacing.xs),
                 Text(
                   'اختر ملف .zip أو مجلداً يحتوي على content.json لتشغيل الكتاب أو اللعبة بدون إنترنت.',
-                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(height: AppSpacing.sm),
                 Row(
@@ -301,7 +303,10 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
                         DropdownMenuItem(value: ContentType.book, child: Text('القصص التفاعلية')),
                         DropdownMenuItem(value: ContentType.game, child: Text('الألعاب التعليمية')),
                         DropdownMenuItem(value: ContentType.quran, child: Text('القرآن الكريم')),
-                        DropdownMenuItem(value: ContentType.soundBook, child: Text('الكتب الصوتية')),
+                        DropdownMenuItem(
+                          value: ContentType.soundBook,
+                          child: Text('الكتب الصوتية'),
+                        ),
                       ],
                     ),
                   ],
@@ -328,10 +333,7 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
                           ),
                         )
                       : TabBarView(
-                          children: [
-                            _buildExplorerTab(theme),
-                            _buildDirectPathTab(theme),
-                          ],
+                          children: [_buildExplorerTab(theme), _buildDirectPathTab(theme)],
                         ),
                 ),
               ],
@@ -402,9 +404,11 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
                       title: Text(name, style: const TextStyle(fontWeight: FontWeight.w500)),
                       subtitle: isDir
                           ? (_hasContentJson(item)
-                              ? const Text('يحتوي على content.json (جاهز للاستيراد)',
-                                  style: TextStyle(color: Colors.green))
-                              : null)
+                                ? const Text(
+                                    'يحتوي على content.json (جاهز للاستيراد)',
+                                    style: TextStyle(color: Colors.green),
+                                  )
+                                : null)
                           : const Text('حزمة مضغوطة .zip', style: TextStyle(color: Colors.blue)),
                       trailing: isZipFile
                           ? FilledButton.icon(
@@ -413,12 +417,12 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
                               onPressed: () => _importZip(item as File),
                             )
                           : (isDir && _hasContentJson(item)
-                              ? OutlinedButton.icon(
-                                  icon: const Icon(Icons.download, size: 16),
-                                  label: const Text('استيراد'),
-                                  onPressed: () => _importFolder(item),
-                                )
-                              : const Icon(Icons.chevron_left_rounded)),
+                                ? OutlinedButton.icon(
+                                    icon: const Icon(Icons.download, size: 16),
+                                    label: const Text('استيراد'),
+                                    onPressed: () => _importFolder(item),
+                                  )
+                                : const Icon(Icons.chevron_left_rounded)),
                       onTap: () {
                         if (isDir) {
                           _loadDirectory(item);
@@ -435,32 +439,29 @@ class _StorageBrowserDialogState extends ConsumerState<StorageBrowserDialog> {
   }
 
   Widget _buildDirectPathTab(ThemeData theme) {
-    return Padding(
+    // Scrollable: in landscape the open keyboard leaves too little height.
+    return ListView(
       padding: const EdgeInsets.all(AppSpacing.md),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'أدخل المسار الكامل لملف Zip أو مجلد على جهازك:',
-            style: theme.textTheme.bodyMedium,
+      children: [
+        Text('أدخل المسار الكامل لملف Zip أو مجلد على جهازك:', style: theme.textTheme.bodyMedium),
+        const SizedBox(height: AppSpacing.sm),
+        TextField(
+          controller: _pathInputController,
+          decoration: InputDecoration(
+            hintText: Platform.isWindows
+                ? 'مثال: D:\\contents\\book1.zip'
+                : 'مثال: /storage/emulated/0/Download/game.zip',
+            border: const OutlineInputBorder(),
+            prefixIcon: const Icon(Icons.folder),
           ),
-          const SizedBox(height: AppSpacing.sm),
-          TextField(
-            controller: _pathInputController,
-            decoration: InputDecoration(
-              hintText: Platform.isWindows ? 'مثال: D:\\contents\\book1.zip' : 'مثال: /storage/emulated/0/Download/game.zip',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.folder),
-            ),
-          ),
-          const SizedBox(height: AppSpacing.lg),
-          FilledButton.icon(
-            icon: const Icon(Icons.file_download),
-            label: const Text('بدء الاستيراد والتشغيل أوفلاين'),
-            onPressed: _importFromInputPath,
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        FilledButton.icon(
+          icon: const Icon(Icons.file_download),
+          label: const Text('بدء الاستيراد والتشغيل أوفلاين'),
+          onPressed: _importFromInputPath,
+        ),
+      ],
     );
   }
 }
